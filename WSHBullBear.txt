@@ -36,11 +36,17 @@ var _analysisInfo = AnalysisInfo.new(sentimentCurrent = false, sentimentTrailing
 type CurrentOrderInfo
     bool isActive = false    
     bool isLong = false
+    int orderId = 0
     float buyPrice = 0
     float numShares = 0
     float profit = 0
     float fees = 0
+    float rangeLow = 0      // The lower price point of the bounded range in which sentiment changes are ignored
+    float rangeHigh = 0     // The upper price point of the bounded range
 var CurrentOrderInfo _coi = CurrentOrderInfo.new()
+
+var float macdFast = na
+var float macdSlow = na
 
 
 //**********************************************************************
@@ -53,11 +59,9 @@ TallyVote() =>
 
     _analysisInfo.detectedSentimentChange := result    
 
-    // We don't change sentiment if within range Boundary
-    if close >= _analysisInfo.rangeBoundaryMarkLow and close <= _analysisInfo.rangeBoundaryMarkHigh
-        result := false
     _analysisInfo.sentimentIsChanged := result
     _analysisInfo.sentimentCurrent := not _analysisInfo.sentimentCurrent
+
 
 //**********************************************************************
 
@@ -65,44 +69,123 @@ TallyVote() =>
 //**********************************************************************
 // Closes out the current order
 //**********************************************************************
-CloseOrder(labelx, labelY) =>
+CloseOrder() =>
+    log.info("Closing order ({0})", _coi.orderId)
+
     // Calculate selling fees
     _coi.fees += close * _feesMaker
     
     string labelText = ""
     lbl = label.new(bar_index, na)
     label.set_textcolor(lbl, color.white)
-    string positionType = "Long"
-    string profit = ""
-    string sDiff = ""
-    float perDiff = 0
+
+    float labelY = 0.07
+    if close > 9999
+        labelY := 175
+    else if close > 999
+        labelY := 40
+    else if close > 99
+        labelY := 8  
 
     if _coi.isLong
-        float priceDiff = close - _coi.buyPrice
+        label.set_y (lbl, close - labelY)
+    else
+        label.set_y (lbl, close + labelY)
+
+    string positionType = "Long"
+    float profit = 0
+    float perDiff = 0
+    float priceDiff = 0
+    if _coi.isLong
+        priceDiff := close - _coi.buyPrice
         perDiff := (priceDiff / _coi.buyPrice)*100
-        sDiff := str.tostring(priceDiff)
-        profit := str.tostring((priceDiff * _coi.numShares) - _coi.fees)
-        
-        label.set_color(lbl, color.blue)
-        //label.set_xy(lbl, labelx, labelY + 0.25)
-        label.set_yloc(lbl, yloc.abovebar)
+        profit := ((priceDiff * _coi.numShares) - _coi.fees)
         label.set_style(lbl, label.style_label_up)
-        //label.set_style(lbl, label.style_flag)
     else
         positionType := "Short"
-        float priceDiff = _coi.buyPrice - close
+        priceDiff := _coi.buyPrice - close
         perDiff := (priceDiff / _coi.buyPrice)*100
-        sDiff := str.tostring(priceDiff)
-        profit := str.tostring(priceDiff * _coi.numShares)
-        //labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
-        label.set_color(lbl, color.blue)
-        label.set_yloc(lbl, yloc.belowbar)
+        profit := ((priceDiff * _coi.numShares) - _coi.fees)
         label.set_style(lbl, label.style_label_down)
-    labelText := str.format("Close {3}\nProfit: $ {0}\nPercent: {1}%\nPrice Gain: $ {2}", profit, perDiff, sDiff, positionType)
+    if profit <= 0 
+        label.set_color(lbl, color.purple)
+    else
+        label.set_color(lbl, color.blue)
+    labelText := str.format("Close {0} ({1})\nShares {6}\nProfit: $ {2}\nPercent: {3}%\nPrice Gain: $ {4}\nFees: {5}", positionType, _coi.orderId ,profit, perDiff, priceDiff, _coi.fees, _coi.numShares)
     label.set_text(lbl, labelText)
     _coi.isActive := false
 
 //**********************************************************************
+
+
+//**********************************************************************
+// * Determine if we should close the current order
+//**********************************************************************
+ShouldCloseOrder() =>
+    bool value = false
+    // We don't change sentiment if within range Boundary
+    if close >= _analysisInfo.rangeBoundaryMarkLow and close <= _analysisInfo.rangeBoundaryMarkHigh
+        log.info("CloseOrder detected SentimentChange.  Should close the order")
+        value := false
+    else if _analysisInfo.sentimentIsChanged
+        value := true
+
+    
+    value 
+
+//**********************************************************************
+
+
+
+//**********************************************************************
+// * Determine if we should open a new order
+//**********************************************************************
+ShouldOpenOrder() =>
+    if _analysisInfo.sentimentIsChanged
+        true
+    else
+        false
+//**********************************************************************
+
+
+//**********************************************************************
+// * Opens a new order
+//**********************************************************************
+OpenOrder(bool isLong) =>
+    _coi.buyPrice := close
+    _coi.isLong := isLong
+    _coi.isActive := true
+    _coi.orderId += 1
+    _coi.fees := 0
+
+    // Set the RANGE Boundaries
+    float boundarySize = close * _rangeBoundary
+    _coi.rangeHigh := close + boundarySize
+    _coi.rangeLow  := close - boundarySize
+
+    string labelText = ""
+    lbl = label.new(bar_index, na)
+    string buyType = ""
+    string title = ""
+    if (isLong)
+        buyType := "Long"
+        label.set_color(lbl, color.lime)
+        label.set_yloc(lbl, yloc.abovebar)
+        label.set_style(lbl, label.style_label_up)
+    else
+        buyType := "Short"
+        label.set_color(lbl, color.red)
+        label.set_yloc(lbl, yloc.belowbar)
+        label.set_style(lbl, label.style_label_down)
+    title := str.format("Buy {0} ({1})  $ {2}", buyType, _coi.orderId, close)
+    label.set_text(lbl, title)
+    
+    string labelToolTip = str.format("Macd:{0} |  {1}  {2}\n Range: {3} - {4}", _analysisInfo.macdValue, macdFast, macdSlow, _coi.rangeLow, _coi.rangeHigh)
+    label.set_tooltip(lbl, labelToolTip)
+
+    log.info("Order Opened : {0}", close)
+//**********************************************************************
+
 
 
 
@@ -150,8 +233,8 @@ sLong = "EMA Long-50"
 ema100 = ta.ema(close,100)
 sBand = "EMA Band-100"
 
-macdFast = ta.ema(close, 12)
-macdSlow = ta.ema(close,26)
+macdFast := ta.ema(close, 12)
+macdSlow := ta.ema(close,26)
 _analysisInfo.macdValue := (macdFast - macdSlow) / macdSlow * 100
 
 
@@ -170,6 +253,7 @@ plot(ema100, color = color.white, linewidth = 3, title = "EMA 100")
 
 bool isLong = false
 bool isShort = false
+color barColor = na
 
 
 // Refresh current Analysis Info
@@ -190,46 +274,23 @@ else
             
 
 
-// Now lets determine if we need to do anything with an active order if there is one.
+//***********************************************************************************************
+// ** Order Logic
+// 2A.  Now lets determine if we need to do anything with an active order if there is one.
 if _coi.isActive  
     // Sentiment has changed.  We need to close this order.
-    if _analysisInfo.sentimentIsChanged
-        CloseOrder(bar_index, ema100)
+    bool shouldClose = ShouldCloseOrder()
+    if shouldClose
+        CloseOrder()
 
 
-// If Sentiment has changed and we have an active order - close iit
-// if _analysisInfo.sentimentIsChanged and _coi.isActive
-//     string labelText = ""
-//     lbl = label.new(bar_index, na)
-//     label.set_textcolor(lbl, color.white)
 
-//     if _coi.isLong 
-//         float priceDiff = close - _coi.buyPrice
-//         float perDiff = (priceDiff / _coi.buyPrice)*100
-//         string sDiff = str.tostring(priceDiff)
-//         string profit = str.tostring(priceDiff * _coi.numShares)
-//         labelText := str.format("CL {0} {1}% \n ${2}", sDiff, perDiff, profit)
-//         label.set_color(lbl, color.blue)
-//         label.set_yloc(lbl, yloc.abovebar)
-//         label.set_style(lbl, label.style_label_up)
-//     else
-//         float priceDiff = _coi.buyPrice - close
-//         float perDiff = (priceDiff / _coi.buyPrice)*100
-//         string sDiff = str.tostring(priceDiff)
-//         string profit = str.tostring(priceDiff * _coi.numShares)
-//         labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
-//         label.set_color(lbl, color.blue)
-//         label.set_yloc(lbl, yloc.belowbar)
-//         label.set_style(lbl, label.style_label_down)
-//     label.set_text(lbl, labelText)
-//     _coi.isActive := false
-
-
-// If we need to create a new order
-if _analysisInfo.sentimentIsChanged
-    _coi.buyPrice := close
-    _coi.isLong := isLong
-    _coi.isActive := true
+//***********************************************************************************************
+// 2B.  Determine if we need to create a new order
+bool shouldOpen = ShouldOpenOrder()
+if shouldOpen
+    OpenOrder(isLong)
+    barColor := color.yellow
 
 
 color colorBandBullish = #0aff68
@@ -277,45 +338,21 @@ centerPlot = plot(emaBand,color = centerColor, title = sBand, linewidth = 4)
 //bandPlot = plot(bandHeight, color = bandColor, title = "Band Range", linewidth = 10)
 //fill(centerPlot, bandPlot, color = bandColor)
 
-color barColor = na
-
-// Display Buy or Sell Signal
-if _analysisInfo.sentimentIsChanged
-    // Set the RANGE Boundaries
-    float boundarySize = close * _rangeBoundary
-    _analysisInfo.rangeBoundaryMarkHigh := close + boundarySize
-    _analysisInfo.rangeBoundaryMarkLow := close - boundarySize
-
-    string labelText = ""
-    lbl = label.new(bar_index, na)
-    string buyType = ""
-
-    if (isLong)
-        buyType := "Buy Long - "
-        labelText := str.format("Buy Long {0}", close)
-        label.set_color(lbl, color.lime)
-        label.set_yloc(lbl, yloc.abovebar)
-        label.set_style(lbl, label.style_label_up)
-    else
-        buyType := "Buy Short - "
-        labelText := str.format("Buy Short {0}", close)
-        label.set_color(lbl, color.red)
-        label.set_yloc(lbl, yloc.belowbar)
-        label.set_style(lbl, label.style_label_down)
-    label.set_text(lbl, labelText)
-    string labelToolTip = str.format("Macd:{0} |  {1}  {2}\n Range: {3} - {4}", _analysisInfo.macdValue, macdFast, macdSlow, _analysisInfo.rangeBoundaryMarkLow, _analysisInfo.rangeBoundaryMarkHigh)
-    label.set_tooltip(lbl, labelToolTip)
-    barColor := color.yellow
 
 
-// Color the Buy bar yellow    
-barcolor(barColor)
+
+
 
 //Bands
 color1   =  #0aff68
 colorPositive   = #00752d
 color3   = #ff0a5a
 color4   = #990032
+
+
+// Final stuff
+// Draw the bar in the correct color
+barcolor(barColor)
 
 
 // Reset some globals
