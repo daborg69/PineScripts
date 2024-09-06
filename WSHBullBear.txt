@@ -2,7 +2,8 @@
 indicator(title="WSH BullBear EMA Channel", precision=5, overlay=true, max_labels_count = 400)
 
 var float _rangeBoundary =  0.01   // The percentage increase / decrease to ignore sentiment changes
-
+var float _feesTaker = 0.0001      // The taker fee for the exchange
+var float _feesMaker = 0.00005     // The maker fee for the exchange
 
 
 type InvestmentInfo
@@ -26,6 +27,7 @@ type AnalysisInfo
     float rangeBoundaryMarkHigh
     bool shouldCloseOrder
     bool detectedSentimentChange            // True if the system detected a sentiment change.  The actual SentimentIsChanged is the final result after any overrides
+
     int direction                           // 1 = Up, 2 = Down
 var _analysisInfo = AnalysisInfo.new(sentimentCurrent = false, sentimentTrailing = false)
 
@@ -37,7 +39,7 @@ type CurrentOrderInfo
     float buyPrice = 0
     float numShares = 0
     float profit = 0
-
+    float fees = 0
 var CurrentOrderInfo _coi = CurrentOrderInfo.new()
 
 
@@ -55,8 +57,50 @@ TallyVote() =>
     if close >= _analysisInfo.rangeBoundaryMarkLow and close <= _analysisInfo.rangeBoundaryMarkHigh
         result := false
     _analysisInfo.sentimentIsChanged := result
-
     _analysisInfo.sentimentCurrent := not _analysisInfo.sentimentCurrent
+
+//**********************************************************************
+
+
+//**********************************************************************
+// Closes out the current order
+//**********************************************************************
+CloseOrder(labelx, labelY) =>
+    // Calculate selling fees
+    _coi.fees += close * _feesMaker
+    
+    string labelText = ""
+    lbl = label.new(bar_index, na)
+    label.set_textcolor(lbl, color.white)
+    string positionType = "Long"
+    string profit = ""
+    string sDiff = ""
+    float perDiff = 0
+
+    if _coi.isLong
+        float priceDiff = close - _coi.buyPrice
+        perDiff := (priceDiff / _coi.buyPrice)*100
+        sDiff := str.tostring(priceDiff)
+        profit := str.tostring((priceDiff * _coi.numShares) - _coi.fees)
+        
+        label.set_color(lbl, color.blue)
+        //label.set_xy(lbl, labelx, labelY + 0.25)
+        label.set_yloc(lbl, yloc.abovebar)
+        label.set_style(lbl, label.style_label_up)
+        //label.set_style(lbl, label.style_flag)
+    else
+        positionType := "Short"
+        float priceDiff = _coi.buyPrice - close
+        perDiff := (priceDiff / _coi.buyPrice)*100
+        sDiff := str.tostring(priceDiff)
+        profit := str.tostring(priceDiff * _coi.numShares)
+        //labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
+        label.set_color(lbl, color.blue)
+        label.set_yloc(lbl, yloc.belowbar)
+        label.set_style(lbl, label.style_label_down)
+    labelText := str.format("Close {3}\nProfit: $ {0}\nPercent: {1}%\nPrice Gain: $ {2}", profit, perDiff, sDiff, positionType)
+    label.set_text(lbl, labelText)
+    _coi.isActive := false
 
 //**********************************************************************
 
@@ -123,16 +167,12 @@ plot(emaLongMid, color = color.aqua, linewidth = 3, title = sLongMid)
 plot(emaFactor, color = #9AE12B, linewidth = 2, title = sLong)
 plot(ema100, color = color.white, linewidth = 3, title = "EMA 100")
 
-// Calculate Band Sentiment
-//bool bandNegative = emaBand < emaFactor ? true : false
-//_analysisInfo.sentimentCurrent := emaBand < emaFactor ? true : false
-//_analysisInfo.emaLowestDirectionLongCurrent := emaBand < emaFactor ? true : false
-//_analysisInfo.voteEMALowestDirectionChanged := _analysisInfo.emaLowestDirectionLongCurrent != _analysisInfo.emaLowestDirectionLongTrailing 
 
 bool isLong = false
 bool isShort = false
 
 
+// Refresh current Analysis Info
 if barstate.isfirst
     // Calculate Investment # of shares (rough estimate for pricing purposes)
     _investmentInfo.shares := _investmentInfo.invested * _investmentInfo.leverage / open
@@ -149,35 +189,40 @@ else
             isLong := true
             
 
-// Determine if the sentiment has changed by tallying all of the votes
+
+// Now lets determine if we need to do anything with an active order if there is one.
+if _coi.isActive  
+    // Sentiment has changed.  We need to close this order.
+    if _analysisInfo.sentimentIsChanged
+        CloseOrder(bar_index, ema100)
 
 
 // If Sentiment has changed and we have an active order - close iit
-if _analysisInfo.sentimentIsChanged and _coi.isActive
-    string labelText = ""
-    lbl = label.new(bar_index, na)
-    label.set_textcolor(lbl, color.white)
+// if _analysisInfo.sentimentIsChanged and _coi.isActive
+//     string labelText = ""
+//     lbl = label.new(bar_index, na)
+//     label.set_textcolor(lbl, color.white)
 
-    if _coi.isLong 
-        float priceDiff = close - _coi.buyPrice
-        float perDiff = (priceDiff / _coi.buyPrice)*100
-        string sDiff = str.tostring(priceDiff)
-        string profit = str.tostring(priceDiff * _coi.numShares)
-        labelText := str.format("CL {0} {1}% \n ${2}", sDiff, perDiff, profit)
-        label.set_color(lbl, color.blue)
-        label.set_yloc(lbl, yloc.abovebar)
-        label.set_style(lbl, label.style_label_up)
-    else
-        float priceDiff = _coi.buyPrice - close
-        float perDiff = (priceDiff / _coi.buyPrice)*100
-        string sDiff = str.tostring(priceDiff)
-        string profit = str.tostring(priceDiff * _coi.numShares)
-        labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
-        label.set_color(lbl, color.blue)
-        label.set_yloc(lbl, yloc.belowbar)
-        label.set_style(lbl, label.style_label_down)
-    label.set_text(lbl, labelText)
-    _coi.isActive := false
+//     if _coi.isLong 
+//         float priceDiff = close - _coi.buyPrice
+//         float perDiff = (priceDiff / _coi.buyPrice)*100
+//         string sDiff = str.tostring(priceDiff)
+//         string profit = str.tostring(priceDiff * _coi.numShares)
+//         labelText := str.format("CL {0} {1}% \n ${2}", sDiff, perDiff, profit)
+//         label.set_color(lbl, color.blue)
+//         label.set_yloc(lbl, yloc.abovebar)
+//         label.set_style(lbl, label.style_label_up)
+//     else
+//         float priceDiff = _coi.buyPrice - close
+//         float perDiff = (priceDiff / _coi.buyPrice)*100
+//         string sDiff = str.tostring(priceDiff)
+//         string profit = str.tostring(priceDiff * _coi.numShares)
+//         labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
+//         label.set_color(lbl, color.blue)
+//         label.set_yloc(lbl, yloc.belowbar)
+//         label.set_style(lbl, label.style_label_down)
+//     label.set_text(lbl, labelText)
+//     _coi.isActive := false
 
 
 // If we need to create a new order
