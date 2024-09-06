@@ -1,0 +1,243 @@
+//@version=5
+indicator(title="WSH BullBear EMA Channel", precision=5, overlay=true, max_labels_count = 400)
+
+
+
+type InvestmentInfo
+    float invested = 200
+    float leverage = 15
+    float shares = 0
+var InvestmentInfo _investmentInfo = InvestmentInfo.new()
+
+
+type AnalysisInfo
+    bool sentimentTrailing  // The sentiment from the prior bar(s)
+    bool sentimentCurrent   // The sentiment of the current bar
+    bool sentimentIsChanged // The sentiment has changed from the trailing sentiment
+    bool voteEMALowestDirectionChanged      // If the lowest EMA factor indicates a change in sentiment
+    bool emaLowestDirectionLongTrailing     // The prior direction of emaLowest factor
+    bool emaLowestDirectionLongCurrent      // The current direction of emaLowest factor
+var _analysisInfo = AnalysisInfo.new(sentimentCurrent = false, sentimentTrailing = false)
+
+
+type CurrentOrderInfo
+    float buyPrice = 0
+    bool isLong = false
+    bool isActive = false
+    float numShares = 0
+    float profit = 0
+
+var CurrentOrderInfo _coi = CurrentOrderInfo.new()
+
+
+TallyVote() =>
+    bool result = false
+    if _analysisInfo.voteEMALowestDirectionChanged 
+        result := true
+    _analysisInfo.sentimentIsChanged := result
+
+
+
+
+float expansionFactor = 0.05
+float emaFreeZone = 0.02
+
+
+var cGreen5 =color.new( #71a2e1,100)
+var cGreen4 = 	#34a84a
+var cGreen3 = #ffc7ea
+var cGreen2 = #fb829e
+var cGreen1 = #b71818
+var cNeutral = #fffad2
+var cRed2 = #ffc7ea
+var cRed3 = #fb829e
+var cRed4 = #d91e1e
+var cRed5 = #b71818
+var color cYellow = 	#f9dc52
+var color cOrange = #e3950b
+
+
+
+// Current Order Information
+var float _coiBuyPrice = 0
+var bool _coiIsLong = false
+var bool _coiIsActive = false
+
+
+// Setup the EMA's and plot them.
+emaShort = ta.ema(close,5)
+sShort = "EMA Short-4"
+
+emaShortMid = ta.ema(close, 10)
+sShortMid = "EMA SMid-10"
+
+emaMid = ta.ema(close, 20)
+sMid = "EMA Mid-20"
+
+emaLongMid = ta.ema(close, 30)
+sLongMid = "EMA LMid-30"
+
+emaLong = ta.ema(close, 40)
+sLong = "EMA Long-50"
+
+ema100 = ta.ema(close,100)
+sBand = "EMA Band-100"
+
+emaBand = emaShort
+emaFactor = emaShortMid
+
+// We do not plot this yet.
+//plot(ema200, color = color.white, linewidth = 8, title = "EMA 200")
+//plot(emaShort, color = color.purple, linewidth = 4, title = sShort)
+plot(emaShortMid, color = color.orange, linewidth = 6, title = sShortMid)
+plot(emaMid, color = #E01AA7,linewidth = 3, title = sMid)
+plot(emaLongMid, color = color.aqua, linewidth = 3, title = sLongMid)
+plot(emaFactor, color = #9AE12B, linewidth = 2, title = sLong)
+plot(ema100, color = color.white, linewidth = 3, title = "EMA 100")
+
+// Calculate Band Sentiment
+//bool bandNegative = emaBand < emaFactor ? true : false
+//_analysisInfo.sentimentCurrent := emaBand < emaFactor ? true : false
+_analysisInfo.emaLowestDirectionLongCurrent := emaBand < emaFactor ? true : false
+_analysisInfo.voteEMALowestDirectionChanged := _analysisInfo.emaLowestDirectionLongCurrent != _analysisInfo.emaLowestDirectionLongTrailing 
+
+bool isLong = false
+bool isShort = false
+
+
+//_analysisInfo.sentimentCurrent := bandNegative
+
+if barstate.isfirst
+    //_analysisInfo.sentimentTrailing := _ana
+    //_analysisInfo.sentimentCurrent := false
+
+    // Calculate Investment # of shares (rough estimate for pricing purposes)
+    _investmentInfo.shares := _investmentInfo.invested * _investmentInfo.leverage / open
+    _coi.numShares := _investmentInfo.shares
+else
+    TallyVote ()
+    //if _analysisInfo.sentimentTrailing != _analysisInfo.sentimentCurrent
+    //    _analysisInfo.sentimentIsChanged := true
+    if _analysisInfo.emaLowestDirectionLongCurrent
+        isShort := true
+    else
+        isLong := true
+            
+
+// Determine if the sentiment has changed by tallying all of the votes
+
+
+// If Sentiment has changed and we have an active order - close indicator
+if _analysisInfo.sentimentIsChanged and _coi.isActive
+    string labelText = ""
+    lbl = label.new(bar_index, na)
+    label.set_textcolor(lbl, color.white)
+    if _coi.isLong
+        float priceDiff = close - _coi.buyPrice
+        float perDiff = (priceDiff / _coi.buyPrice)*100
+        string sDiff = str.tostring(priceDiff)
+        string profit = str.tostring(priceDiff * _coi.numShares)
+        labelText := str.format("CL {0} {1}% \n ${2}", sDiff, perDiff, profit)
+        label.set_color(lbl, color.blue)
+        label.set_yloc(lbl, yloc.abovebar)
+        label.set_style(lbl, label.style_label_up)
+    else
+        float priceDiff = _coi.buyPrice - close
+        float perDiff = (priceDiff / _coi.buyPrice)*100
+        string sDiff = str.tostring(priceDiff)
+        string profit = str.tostring(priceDiff * _coi.numShares)
+        labelText := str.format("CS {0} {1}% \n ${2}", sDiff, perDiff, profit)
+        label.set_color(lbl, color.blue)
+        label.set_yloc(lbl, yloc.belowbar)
+        label.set_style(lbl, label.style_label_down)
+    label.set_text(lbl, labelText)
+    _coi.isActive := false
+
+
+// If we need to create a new order
+if _analysisInfo.sentimentIsChanged
+    _coi.buyPrice := close
+    _coi.isLong := isLong
+    _coi.isActive := true
+
+
+color colorBandBullish = #0aff68
+color cBull80 = 	#c9ecaf
+color cBullMid = #19784a
+
+color colorBandBearish = #ff0a5a
+//color colorBullish   = #00752d
+color colorBullish = #C8F0B7
+color colorBearish = #990032
+color centerColor = color.black
+color bandColor = color.black
+float bandHeight = 1
+
+
+if _analysisInfo.emaLowestDirectionLongCurrent
+    bandColor := cGreen4
+    // If Bearish in bullish run
+    if emaShort < emaLong
+        bandColor := cRed5
+    else if emaShort < emaLongMid
+        bandColor := cRed3
+    else if emaShort < emaMid
+        bandColor := cOrange
+    else if emaShort < emaShortMid
+        bandColor := cYellow
+
+    centerColor := colorBullish
+    expansionFactor := 1 - expansionFactor
+    bandHeight := emaFactor * expansionFactor
+else
+    centerColor := colorBearish
+    bandColor := colorBandBearish
+    expansionFactor := 1 + expansionFactor
+    bandHeight := emaFactor * expansionFactor
+
+
+// Set transparency for band
+bandColor := color.new(bandColor,50)
+
+// Plot the centerband
+centerPlot = plot(emaBand,color = centerColor, title = sBand, linewidth = 4)
+
+// Plot the band 
+//bandPlot = plot(bandHeight, color = bandColor, title = "Band Range", linewidth = 10)
+//fill(centerPlot, bandPlot, color = bandColor)
+
+color barColor = na
+
+// Display Buy or Sell Signal
+if (_analysisInfo.sentimentIsChanged)
+    string labelText = ""
+    lbl = label.new(bar_index, na)
+    if (isLong)
+        labelText := "Buy Long - " + str.tostring(close)
+        label.set_color(lbl, color.lime)
+        label.set_yloc(lbl, yloc.abovebar)
+        label.set_style(lbl, label.style_label_up)
+    else
+        labelText := "Buy Short - " + str.tostring(close)
+        label.set_color(lbl, color.red)
+        label.set_yloc(lbl, yloc.belowbar)
+        label.set_style(lbl, label.style_label_down)
+    label.set_text(lbl, labelText)
+    barColor := color.yellow
+
+// Color the Buy bar yellow    
+barcolor(barColor)
+
+//Bands
+color1   =  #0aff68
+colorPositive   = #00752d
+color3   = #ff0a5a
+color4   = #990032
+
+
+// Reset some globals
+_analysisInfo.sentimentIsChanged := false
+_analysisInfo.sentimentTrailing := _analysisInfo.sentimentCurrent
+_analysisInfo.emaLowestDirectionLongTrailing := _analysisInfo.emaLowestDirectionLongCurrent
+
+
