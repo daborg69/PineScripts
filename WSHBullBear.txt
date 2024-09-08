@@ -1,3 +1,18 @@
+// EMA Interval values:
+// Short 0 - 20
+//   S1 = 
+//   S2 = 
+//   S3 =
+// Mid 21 - 50
+//   M1 = 
+//   M2 = 
+//   M3 = 
+// Long 51 -+
+//   l1
+//   l2
+//   l3 = 
+
+
 //@version=5
 //indicator(title="WSH BullBear EMA Channel", precision=5, overlay=true, max_labels_count = 500)
 strategy(title="WSH BullBear EMA Channel", precision=5, overlay=true, max_labels_count = 500)
@@ -8,7 +23,7 @@ var float _feesMaker = 0.00075     // The maker fee for the exchange
 
 
 type InvestmentInfo
-    float invested = 201
+    float invested = 200
     float leverage = 15
     float shares = 0
 var InvestmentInfo _investmentInfo = InvestmentInfo.new()
@@ -35,9 +50,10 @@ type AnalysisInfo
     bool sentimentTrailing      // The sentiment from the prior bar(s)
     bool sentimentCurrentIsLong      // The sentiment of the current bar.  True if long, false if short
     bool sentimentIsChanged     // The sentiment has changed from the trailing sentiment
-    IndicatorEMA indEMAShortest    // The Shortest / quickest to change indicator
-    IndicatorEMA indEMAMid          
-    IndicatorEMA indEMALongest      // The Longest EMA
+    IndicatorEMA indEMA_S1    // The Shortest / quickest to change indicator
+    IndicatorEMA indEMA_S3          
+    IndicatorEMA indEMA_M1      // The Longest EMA
+    IndicatorEMA indEMA_L1      // The Longest EMA
     bool emaLowestDirectionLongCurrent      // The current direction of emaLowest factor
     float macdValue                         // The MACD Percentage macdValue
     bool detectedSentimentChange            // True if the system detected a sentiment change.  The actual SentimentIsChanged is the final result after any overrides
@@ -53,7 +69,10 @@ type CurrentOrderInfo
     float buyPrice = 0
     float numShares = 0
     float profit = 0
+    float profitPercent = 0
+    float sharePriceChange = 0
     float fees = 0
+    string positionTypeTitleShort = ""
     float rangeLow = 0      // The lower price point of the bounded range in which sentiment changes are ignored
     float rangeHigh = 0     // The upper price point of the bounded range
     float recentLow = 0     // The most recent low back so many bars when the order was opened
@@ -74,7 +93,19 @@ var float macdSlow = na
 // * Calculates Percentage Change for a start and end value
 //**********************************************************************
 PercentageChange(start, end) =>
-    ((end - start) / start) * 100
+    float value = ((end - start) / start) * 100
+    value   
+//**********************************************************************
+
+
+//**********************************************************************
+// Calculates the Order percentage change.  
+//**********************************************************************
+OrderPercentageChange(start, end, bool orderIsLong = true) =>
+    float value = PercentageChange(start, end)
+    if not orderIsLong    
+        value := value * -1
+    value
 //**********************************************************************
 
 
@@ -96,6 +127,24 @@ PercentageChangePeriod(int barsBack) =>
     [overall_change, start_to_high, start_to_low]
 
 //**********************************************************************
+
+
+//**********************************************************************
+// Calculates the Share Price Change, Profit Percentage and the Total Profit for the order.
+//**********************************************************************
+CalculateOrderProfit() =>
+    if _coi.isLong
+        _coi.sharePriceChange := close - _coi.buyPrice
+        _coi.profitPercent :=  OrderPercentageChange(_coi.buyPrice, close, _coi.isLong) 
+        _coi.profit := ((_coi.sharePriceChange * _coi.numShares) - _coi.fees)
+    else
+        _coi.sharePriceChange := _coi.buyPrice - close
+        _coi.profitPercent  :=  OrderPercentageChange(_coi.buyPrice, close, _coi.isLong) 
+        _coi.profit := ((_coi.sharePriceChange * _coi.numShares) - _coi.fees)
+//**********************************************************************
+
+
+
 
 
 //**********************************************************************
@@ -124,30 +173,29 @@ CloseOrder() =>
     else
         label.set_y (lbl, close + labelY)
 
-    string positionType = "Long"
-    float profit = 0
-    float perDiff = 0
-    float priceDiff = 0
+    CalculateOrderProfit()
+
     if _coi.isLong
-        priceDiff := close - _coi.buyPrice
-        perDiff :=  PercentageChange(_coi.buyPrice, close) // (priceDiff / _coi.buyPrice)*100
-        profit := ((priceDiff * _coi.numShares) - _coi.fees)
         label.set_style(lbl, label.style_label_up)
     else
-        positionType := "Short"
-        priceDiff := _coi.buyPrice - close
-        perDiff :=  PercentageChange(close, _coi.buyPrice)
-        profit := ((priceDiff * _coi.numShares) - _coi.fees)
         label.set_style(lbl, label.style_label_down)
-    if profit <= 0 
+    if _coi.profit <= 0 
         label.set_color(lbl, color.purple)
     else
         label.set_color(lbl, color.blue)
 
-    _analysisInfo.totalProfit += profit
-    labelText := str.format("Close {0} ({1})\nShares {6}\nProfit: $ {2}\nPercent: {3}%\nPrice Gain: $ {4}\nFees: {5}\nTotal Profit $ {7}", positionType, _coi.orderId ,profit, perDiff, priceDiff, _coi.fees, _coi.numShares, _analysisInfo.totalProfit)
+    _analysisInfo.totalProfit += _coi.profit
+    labelText := str.format("Close {0} ({1})\nShares {6}\nProfit: $ {2}\nPercent: {3}%\nPrice Gain: $ {4}\nFees: {5}\nTotal Profit $ {7}", _coi.positionTypeTitleShort, _coi.orderId , _coi.profit, _coi.profitPercent, _coi.sharePriceChange, _coi.fees, _coi.numShares, _analysisInfo.totalProfit)
     label.set_text(lbl, labelText)
     _coi.isActive := false
+//**********************************************************************
+
+
+//**********************************************************************
+// * Updates certain order information with current data
+//**********************************************************************
+UpdateOrder() =>
+    CalculateOrderProfit()
 
 //**********************************************************************
 
@@ -157,25 +205,46 @@ CloseOrder() =>
 //**********************************************************************
 ShouldCloseOrder() =>
     bool value = false
+    bool forced = false     // If true then no more voting should be done and the current value should be returned.
+
+    // Update some stats on the order that we need
+    UpdateOrder()
+
+    // This should always be first item
+    if _analysisInfo.sentimentIsChanged
+        value := true
+        if _coi.isActive
+            // If the new sentiment is the same as the order sentiment.  Then leave order open
+            if _analysisInfo.sentimentCurrentIsLong == _coi.isLong
+                value := false
+        
+    log.info("ShoulCloseOrder?:  Vote2: Analysis Sentiment Changed: {0}", value)    
+
+    // This evaluates conditions that would close an order regardless of the Sentiment.
+    if true == true
+        bool doSomething = false
+
     // We don't change sentiment if within range Boundary
     if close >= _coi.rangeLow and close <= _coi.rangeHigh
+        forced := true
         value := false
     log.info("ShoulCloseOrder?:  Vote1: Outside Range Boundary: {0}", value)    
 
-    if not value and _analysisInfo.sentimentIsChanged
-        value := true
-    log.info("ShoulCloseOrder?:  Vote2: Analysis Sentiment Changed: {0}", value)    
+    if not forced and true == true
+        bool doSomething = false
 
-    log.warning("ShouldCloseOrder?: Final Tally: {0}", value)
+    log.warning("ShouldCloseOrder?: Final Tally: {0}  Forced Override: {1}", value, forced)
     value 
 
-//**********************************************************************
+//*********************************************************************
 
 
 //**********************************************************************
 // * Determine if we should open a new order
 //**********************************************************************
 ShouldOpenOrder() =>
+    // Need at least 2 of the EMA indicators to indicate a trend reversal
+    //if _analysisInfo.in
     if _analysisInfo.sentimentIsChanged
         true
     else
@@ -231,25 +300,30 @@ OpenOrder(bool isLong) =>
 //**********************************************************************
 // Sets up the Analysis Info record.
 //**********************************************************************
-SetupAnalysisInfo(float ema1, float emaMid, float emaLongest) =>
+SetupAnalysisInfo(float ema1, float ema_S3, float ema_M1, float ema_L1) =>
     if not _analysisInfo.setupCompleted
-        _analysisInfo.indEMAShortest := IndicatorEMA.new(title = "EMA 5")
-        _analysisInfo.indEMALongest := IndicatorEMA.new(title ="EMA 100")
-        _analysisInfo.indEMAMid := IndicatorEMA.new(title = "EMA 30")
+        _analysisInfo.indEMA_S1 := IndicatorEMA.new(title = "EMA S1 - 5")
+        _analysisInfo.indEMA_L1 := IndicatorEMA.new(title ="EMA L1 - 100")
+        _analysisInfo.indEMA_S3 := IndicatorEMA.new(title = "EMA S3 - 20")
+        _analysisInfo.indEMA_M1 := IndicatorEMA.new(title = "EMA M1 - 32")
         _analysisInfo.setupCompleted := true
     
     // Short EMA
-    _analysisInfo.indEMAShortest.value := ema1
-    _analysisInfo.indEMAShortest.didJustChangeDirection := false
+    _analysisInfo.indEMA_S1.value := ema1
+    _analysisInfo.indEMA_S1.didJustChangeDirection := false
 
     // Mid EMA
-    _analysisInfo.indEMAMid.value := emaMid
-    _analysisInfo.indEMAMid.didJustChangeDirection := false
+    _analysisInfo.indEMA_S3.value := ema_S3
+    _analysisInfo.indEMA_S3.didJustChangeDirection := false
+
+    // Mid Long EMA
+    _analysisInfo.indEMA_M1.value := ema_M1
+    _analysisInfo.indEMA_M1.didJustChangeDirection := false
 
 
     // Long EMA
-    _analysisInfo.indEMALongest.value := emaLongest
-    _analysisInfo.indEMALongest.didJustChangeDirection := false
+    _analysisInfo.indEMA_L1.value := ema_L1
+    _analysisInfo.indEMA_L1.didJustChangeDirection := false
 
 //**********************************************************************
 
@@ -271,8 +345,8 @@ UpdateIndicators() =>
     string title = ""                           // Title to show on chart
 
     // Update the Shortest Indicator
-    IndicatorEMA ind = _analysisInfo.indEMAShortest
-    IndicatorEMA comp = _analysisInfo.indEMAMid
+    IndicatorEMA ind = _analysisInfo.indEMA_S1
+    IndicatorEMA comp = _analysisInfo.indEMA_S3
     log.warning("TC Detection  [Longest: {0}  Shortest: {1}]", comp.value,ind.value)
     if ind.value > comp.value
         // Indicates upward movement.
@@ -294,53 +368,43 @@ UpdateIndicators() =>
 //**********************************************************************
 ScoreAnalysis() =>
     bool scoreIsChanged = false
-    if _analysisInfo.indEMAShortest.didJustChangeDirection
+    if _analysisInfo.indEMA_S1.didJustChangeDirection
         scoreIsChanged := true
 
     _analysisInfo.sentimentIsChanged := scoreIsChanged
-    _analysisInfo.sentimentCurrentIsLong := _analysisInfo.indEMAShortest.trendIsUpST
+    _analysisInfo.sentimentCurrentIsLong := _analysisInfo.indEMA_S1.trendIsUpST
     scoreIsChanged
 //**********************************************************************
 
 
 // Start of Logic
 
-// Define the EMA's we will use
-emaShort = ta.ema(close,5)
-const string sShort = "EMA Short-5"
+// Define the EMA's we will use.  They should be listed in order you want them to overlay other plots
+ema_L1 = ta.ema(close,100)
+const string cEMATitle_L1 = "EMA Long 50"
 
-emaMid = ta.ema(close, 20)
-sMid = "EMA Mid-20"
+ema_M1 = ta.ema(close, 32)
+const string cEMATitle_M1 = "EMA Mid 32"
 
-emaLongest = ta.ema(close,100)
+ema_S3 = ta.ema(close, 20)
+const string cEMATitle_S3 = "EMA SMid 20"
 
-SetupAnalysisInfo(emaShort, emaMid, emaLongest)
+ema_S1 = ta.ema(close,5)
+const string cEMATitle_S1 = "EMA Short 5"
+
+
+
+// Setup and Update Indicators each pass.
+SetupAnalysisInfo(ema_S1, ema_S3, ema_M1, ema_L1)
 UpdateIndicators()
 ScoreAnalysis()
 
 
-
-// Current Order Information
-var float _coiBuyPrice = 0
-var bool _coiIsLong = false
-var bool _coiIsActive = false
-
-
-// Setup the EMA's and plot them.
-
-
-emaShortMid = ta.ema(close, 12)
-sShortMid = "EMA SMid-10"
-
-
-emaLongMid = ta.ema(close, 30)
-sLongMid = "EMA LMid-30"
-
-emaLong = ta.ema(close, 40)
-sLong = "EMA Long-50"
-
-//ema100 = ta.ema(close,100)
-//sBand = "EMA Band-100"
+// These plot statements must appear after the SetupAnalysisInfo function call!
+plot(_analysisInfo.indEMA_L1.value, color = color.white, linewidth = 3, title = cEMATitle_L1)
+plot(_analysisInfo.indEMA_M1.value, color = color.orange, linewidth = 2, title = cEMATitle_M1)
+plot(_analysisInfo.indEMA_S3.value, color = color.aqua, linewidth = 2, title = cEMATitle_S3)
+plot(_analysisInfo.indEMA_S1.value, color = #9AE12B, linewidth = 2, title = cEMATitle_S1)
 
 macdFast := ta.ema(close, 12)
 macdSlow := ta.ema(close,26)
@@ -348,18 +412,10 @@ _analysisInfo.macdValue := (macdFast - macdSlow) / macdSlow * 100
 
 sma = ta.sma(close,100)
 
-
-// We do not plot this yet.
-//plot(ema200, color = color.white, linewidth = 8, title = "EMA 200")
-
-//plot(emaShortMid, color = color.orange, linewidth = 6, title = sShortMid)
-
-//plot(emaLongMid, color = color.aqua, linewidth = 3, title = sLongMid)
-
 plot(sma, color = color.purple, linewidth = 3, title = "SMA 100")
-plot(_analysisInfo.indEMALongest.value, color = color.white, linewidth = 3, title = "Longest")
-plot(_analysisInfo.indEMAMid.value, color = color.aqua, linewidth = 2, title = "Shortest")
-plot(_analysisInfo.indEMAShortest.value, color = #9AE12B, linewidth = 2, title = "Shortest")
+
+
+
 
 
 color barColor = na
@@ -424,18 +480,19 @@ if _analysisInfo.sentimentIsChanged == false
 //&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
 
 
+//PlotHiLow
 // This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © LonesomeThecolor.blue
-lb = input(15, title="Left Bars")
-rb = input(15, title="Right Bars")
+lb = input(10, title="Left Bars")
+rb = input(10, title="Right Bars")
 showsupres = input(true, title="Support/Resistance", inline = "srcol")
 supcol = input(color.lime, title ="", inline = "srcol")
 rescol = input(color.red, title ="", inline = "srcol")
 srlinestyle = input(line.style_dotted, title = "Line Style/Width", inline="style") 
 srlinewidth = input(3, title = "", inline ="style")
 changebarcol = input(true, title="Change Bar Color", inline = "bcol")
-bcolup = input(color.blue, title ="", inline = "bcol")
-bcoldn = input(color.black, title ="", inline = "bcol")
+barColorUp = input(color.blue, title ="", inline = "bcol")
+barColorDown = input(color.black, title ="", inline = "bcol")
 
 ph = ta.pivothigh(lb, rb)
 pl = ta.pivotlow(lb, rb)
@@ -527,7 +584,7 @@ if showsupres
         line.set_extend(supline, extend = extend.none)
         supline := line.new(x1 = bar_index - rb, y1 = support, x2 = bar_index, y2 = support, color = supcol, extend = extend.right, style = srlinestyle, width = srlinewidth)    
 
-barcolor(color = changebarcol ? (trend == 1) ? bcolup :  bcoldn :  na)
+barcolor(color = changebarcol ? (trend == 1) ? barColorUp :  barColorDown :  na)
 
 
 
